@@ -19,22 +19,19 @@ import { Document, Page, pdfjs } from "react-pdf";
 import { PDFDocument } from "pdf-lib";
 import { Rnd } from "react-rnd";
 
-pdfjs.GlobalWorkerOptions.workerSrc = `//cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjs.version}/pdf.worker.min.js`;
+// Use local pdf.js worker (ensure pdf.worker.min.js is in public/)
+pdfjs.GlobalWorkerOptions.workerSrc = "/pdf.worker.min.js";
 
 const { Text } = Typography;
 
 type PlacedSignature = {
   id: string;
   page: number; // 1-based
-  x: number; // PDF points
-  y: number; // PDF points
-  width: number; // PDF points
-  height: number; // PDF points
   imgDataUrl: string; // PNG data URL
-  displayX?: number; // px relative to page container
-  displayY?: number;
-  displayW?: number;
-  displayH?: number;
+  displayX: number; // px relative to page container
+  displayY: number;
+  displayW: number;
+  displayH: number;
 };
 
 export default function PdfSigningTool() {
@@ -49,7 +46,6 @@ export default function PdfSigningTool() {
 
   const sigCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const sigDrawing = useRef(false);
-
   const pageContainersRef = useRef<Record<number, HTMLDivElement | null>>({});
   const pageViewportSizes = useRef<
     Record<
@@ -57,9 +53,9 @@ export default function PdfSigningTool() {
       { width: number; height: number; pdfWidth: number; pdfHeight: number }
     >
   >({});
-
   const pdfLibDocRef = useRef<PDFDocument | null>(null);
 
+  // Initialize canvas for signature drawing
   useEffect(() => {
     const canvas = sigCanvasRef.current;
     if (!canvas) return;
@@ -73,7 +69,8 @@ export default function PdfSigningTool() {
     }
   }, []);
 
-  function startDraw(e: React.MouseEvent<HTMLCanvasElement>) {
+  // Signature drawing handlers
+  const startDraw = (e: React.MouseEvent<HTMLCanvasElement>) => {
     const canvas = sigCanvasRef.current;
     if (!canvas) return;
     sigDrawing.current = true;
@@ -84,8 +81,9 @@ export default function PdfSigningTool() {
     if (!ctx) return;
     ctx.beginPath();
     ctx.moveTo(x, y);
-  }
-  function draw(e: React.MouseEvent<HTMLCanvasElement>) {
+  };
+
+  const draw = (e: React.MouseEvent<HTMLCanvasElement>) => {
     if (!sigDrawing.current) return;
     const canvas = sigCanvasRef.current;
     if (!canvas) return;
@@ -96,53 +94,82 @@ export default function PdfSigningTool() {
     if (!ctx) return;
     ctx.lineTo(x, y);
     ctx.stroke();
-  }
-  function endDraw() {
-    sigDrawing.current = false;
-  }
-  function clearSig() {
-    const c = sigCanvasRef.current;
-    if (!c) return;
-    const ctx = c.getContext("2d");
-    if (!ctx) return;
-    ctx.clearRect(0, 0, c.width, c.height);
-  }
+  };
 
+  const endDraw = () => {
+    sigDrawing.current = false;
+  };
+
+  const clearSig = () => {
+    const canvas = sigCanvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+  };
+
+  // PDF upload handler with enhanced validation
   const beforePdfUpload = async (file: File) => {
-    const arrayBuffer = await file.arrayBuffer();
-    setPdfArrayBuffer(arrayBuffer);
-    const pdfDoc = await PDFDocument.load(arrayBuffer);
-    pdfLibDocRef.current = pdfDoc;
-    setNumPages(pdfDoc.getPageCount());
-    message.success(`${file.name} loaded`);
+    try {
+      console.log("Uploading file:", file.name, "Size:", file.size);
+      if (file.type !== "application/pdf") {
+        message.error("Please upload a valid PDF file.");
+        return false;
+      }
+      const arrayBuffer = await file.arrayBuffer();
+      console.log("ArrayBuffer size:", arrayBuffer.byteLength);
+      if (arrayBuffer.byteLength === 0) {
+        message.error("Uploaded PDF is empty or invalid.");
+        return false;
+      }
+      const pdfDoc = await PDFDocument.load(arrayBuffer);
+      console.log("PDF loaded with pdf-lib, pages:", pdfDoc.getPageCount());
+      setPdfArrayBuffer(arrayBuffer);
+      pdfLibDocRef.current = pdfDoc;
+      setNumPages(pdfDoc.getPageCount());
+      message.success(`${file.name} loaded successfully`);
+    } catch (error) {
+      console.error("Error loading PDF:", error);
+      message.error("Failed to load PDF. Please upload a valid PDF file.");
+      return false;
+    }
     return false;
   };
 
-  async function onPageRenderSuccess(pageIndex: number) {
-    const container = pageContainersRef.current[pageIndex];
+  // Page render success handler
+  const onPageRenderSuccess = async (pageNumber: number) => {
+    const container = pageContainersRef.current[pageNumber];
     if (!container || !pdfLibDocRef.current) return;
-    const page = pdfLibDocRef.current.getPage(pageIndex - 1);
+    const page = pdfLibDocRef.current.getPage(pageNumber - 1);
     const { width: pdfWidth, height: pdfHeight } = page.getSize();
     const rect = container.getBoundingClientRect();
-    pageViewportSizes.current[pageIndex] = {
+    pageViewportSizes.current[pageNumber] = {
       width: rect.width,
       height: rect.height,
       pdfWidth,
       pdfHeight,
     };
-  }
+    console.log(
+      `Page ${pageNumber} viewport:`,
+      pageViewportSizes.current[pageNumber]
+    );
+  };
 
-  async function onPageClick(
+  // Handler for placing signature on page click
+  const onPageClick = async (
     e: React.MouseEvent<HTMLDivElement>,
     pageNumber: number
-  ) {
+  ) => {
     const container = pageContainersRef.current[pageNumber];
     if (!container) return;
     const rect = container.getBoundingClientRect();
     const clickX = e.clientX - rect.left;
     const clickY = e.clientY - rect.top;
     const viewport = pageViewportSizes.current[pageNumber];
-    if (!viewport) return;
+    if (!viewport) {
+      console.warn(`No viewport data for page ${pageNumber}`);
+      return;
+    }
     const canvas = sigCanvasRef.current;
     if (!canvas) {
       message.warning("Draw or upload a signature first");
@@ -161,96 +188,121 @@ export default function PdfSigningTool() {
       const newSig: PlacedSignature = {
         id: `${Date.now()}_${Math.random()}`,
         page: pageNumber,
-        x: 0,
-        y: 0,
-        width: 0,
-        height: 0,
         imgDataUrl: dataUrl,
         displayX,
         displayY,
         displayW,
         displayH,
       };
-      setPlacedSignatures((s) => [...s, newSig]);
+      setPlacedSignatures((sigs) => [...sigs, newSig]);
       message.success("Signature placed, drag/resize to adjust.");
     };
-  }
+  };
 
-  async function applySignaturesAndDownload() {
+  // Apply signatures and download
+  const applySignaturesAndDownload = async () => {
     if (!pdfLibDocRef.current || !pdfArrayBuffer) {
       message.warning("Load a PDF first");
       return;
     }
-    const pdfDoc = await PDFDocument.load(pdfArrayBuffer);
-    for (const sig of placedSignatures) {
-      const viewport = pageViewportSizes.current[sig.page];
-      if (!viewport) continue;
-      const pxPerPdfPointX = viewport.width / viewport.pdfWidth;
-      const pxPerPdfPointY = viewport.height / viewport.pdfHeight;
-      const pdfX = sig.displayX! / pxPerPdfPointX;
-      const pdfY =
-        (viewport.height - (sig.displayY! + sig.displayH!)) / pxPerPdfPointY;
-      const pdfW = sig.displayW! / pxPerPdfPointX;
-      const pdfH = sig.displayH! / pxPerPdfPointY;
+    try {
+      const pdfDoc = await PDFDocument.load(pdfArrayBuffer);
+      for (const sig of placedSignatures) {
+        const viewport = pageViewportSizes.current[sig.page];
+        if (!viewport) {
+          console.warn(`No viewport for signature on page ${sig.page}`);
+          continue;
+        }
+        const pxPerPdfPointX = viewport.width / viewport.pdfWidth;
+        const pxPerPdfPointY = viewport.height / viewport.pdfHeight;
+        const pdfX = sig.displayX / pxPerPdfPointX;
+        const pdfY =
+          (viewport.height - (sig.displayY + sig.displayH)) / pxPerPdfPointY;
+        const pdfW = sig.displayW / pxPerPdfPointX;
+        const pdfH = sig.displayH / pxPerPdfPointY;
 
-      const pngImageBytes = dataURLtoUint8Array(sig.imgDataUrl);
-      const pngImage = await pdfDoc.embedPng(pngImageBytes);
-      const page = pdfDoc.getPages()[sig.page - 1];
-      page.drawImage(pngImage, { x: pdfX, y: pdfY, width: pdfW, height: pdfH });
+        const pngImageBytes = dataURLtoUint8Array(sig.imgDataUrl);
+        const pngImage = await pdfDoc.embedPng(pngImageBytes);
+        const page = pdfDoc.getPages()[sig.page - 1];
+        page.drawImage(pngImage, {
+          x: pdfX,
+          y: pdfY,
+          width: pdfW,
+          height: pdfH,
+        });
+      }
+      const signedBytes = await pdfDoc.save();
+      const blob = new Blob([new Uint8Array(signedBytes)], {
+        type: "application/pdf",
+      });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "signed.pdf";
+      a.click();
+      URL.revokeObjectURL(url);
+      message.success("Signed PDF downloaded");
+    } catch (error) {
+      console.error("Error applying signatures:", error);
+      message.error("Failed to apply signatures. Please try again.");
     }
-    const signedBytes = await pdfDoc.save();
-    const blob = new Blob([new Uint8Array(signedBytes)], {
-      type: "application/pdf",
-    });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = "signed.pdf";
-    a.click();
-    URL.revokeObjectURL(url);
-    message.success("Signed PDF downloaded");
-  }
+  };
 
-  function dataURLtoUint8Array(dataURL: string) {
+  // Convert data URL to Uint8Array
+  const dataURLtoUint8Array = (dataURL: string) => {
     const base64 = dataURL.split(",")[1];
     const binaryString = atob(base64);
     const len = binaryString.length;
     const bytes = new Uint8Array(len);
     for (let i = 0; i < len; i++) bytes[i] = binaryString.charCodeAt(i);
     return bytes;
-  }
+  };
 
+  // Signature image upload handler
   const beforeSigUpload = async (file: File) => {
-    const dataUrl = await fileToDataUrl(file);
-    const canvas = sigCanvasRef.current;
-    if (!canvas) return false;
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return false;
-    const img = new Image();
-    img.src = dataUrl;
-    img.onload = () => {
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
-      const maxW = canvas.width * 0.9;
-      const maxH = canvas.height * 0.9;
-      let w = img.width;
-      let h = img.height;
-      const ratio = Math.min(maxW / w, maxH / h, 1);
-      w *= ratio;
-      h *= ratio;
-      ctx.drawImage(img, (canvas.width - w) / 2, (canvas.height - h) / 2, w, h);
-    };
-    message.success("Signature image loaded into pad");
+    try {
+      const dataUrl = await fileToDataUrl(file);
+      const canvas = sigCanvasRef.current;
+      if (!canvas) return false;
+      const ctx = canvas.getContext("2d");
+      if (!ctx) return false;
+      const img = new Image();
+      img.src = dataUrl;
+      img.onload = () => {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        const maxW = canvas.width * 0.9;
+        const maxH = canvas.height * 0.9;
+        let w = img.width;
+        let h = img.height;
+        const ratio = Math.min(maxW / w, maxH / h, 1);
+        w *= ratio;
+        h *= ratio;
+        ctx.drawImage(
+          img,
+          (canvas.width - w) / 2,
+          (canvas.height - h) / 2,
+          w,
+          h
+        );
+      };
+      message.success("Signature image loaded into pad");
+    } catch (error) {
+      console.error("Error loading signature image:", error);
+      message.error("Failed to load signature image. Please try again.");
+      return false;
+    }
     return false;
   };
 
-  function fileToDataUrl(file: File) {
+  // Convert file to data URL
+  const fileToDataUrl = (file: File) => {
     return new Promise<string>((res, rej) => {
       const fr = new FileReader();
       fr.onload = () => res(fr.result as string);
       fr.onerror = rej;
       fr.readAsDataURL(file);
     });
-  }
+  };
 
   return (
     <div style={{ padding: 16 }}>
@@ -276,8 +328,8 @@ export default function PdfSigningTool() {
                 width: "100%",
                 cursor: "crosshair",
               }}
-              onMouseDown={(e) => startDraw(e)}
-              onMouseMove={(e) => draw(e)}
+              onMouseDown={startDraw}
+              onMouseMove={draw}
               onMouseUp={endDraw}
               onMouseLeave={endDraw}
             />
@@ -338,13 +390,26 @@ export default function PdfSigningTool() {
                 position: "relative",
               }}
             >
-              {!pdfArrayBuffer && (
-                <div style={{ padding: 32 }}>No PDF loaded</div>
-              )}
-              {pdfArrayBuffer && (
+              {!pdfArrayBuffer ? (
+                <div style={{ padding: 32 }}>
+                  No PDF loaded. Please upload a PDF file.
+                </div>
+              ) : (
                 <Document
                   file={pdfArrayBuffer}
-                  onLoadSuccess={(d) => setNumPages(d.numPages)}
+                  onLoadSuccess={(pdf) => {
+                    console.log(
+                      "PDF loaded successfully, pages:",
+                      pdf.numPages
+                    );
+                    setNumPages(pdf.numPages);
+                  }}
+                  onLoadError={(error) => {
+                    console.error("PDF loading error:", error);
+                    message.error(
+                      "Failed to load PDF file. Please ensure the file is valid and try again."
+                    );
+                  }}
                 >
                   {Array.from(new Array(numPages), (el, index) => (
                     <div
@@ -375,10 +440,10 @@ export default function PdfSigningTool() {
                               key={sig.id}
                               bounds="parent"
                               size={{
-                                width: sig.displayW!,
-                                height: sig.displayH!,
+                                width: sig.displayW,
+                                height: sig.displayH,
                               }}
-                              position={{ x: sig.displayX!, y: sig.displayY! }}
+                              position={{ x: sig.displayX, y: sig.displayY }}
                               onDragStop={(e, d) => {
                                 setPlacedSignatures((sigs) =>
                                   sigs.map((s) =>
